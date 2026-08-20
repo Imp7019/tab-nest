@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TabNest</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="/icons/icon32.png?v=1.2.0">
+  <link rel="shortcut icon" type="image/png" href="/icons/icon32.png?v=1.2.0">
 
   <link rel="stylesheet" href="style.css">
 </head>
@@ -99,6 +101,7 @@
           <div class="section-count" id="openTabsSectionCount"></div>
         </div>
       </div>
+      <div class="pinned-tabs-section" id="pinnedTabsSection" style="display:none"></div>
       <div class="missions" id="openTabsMissions"></div>
       <div class="window-groups" id="openTabsWindows" style="display:none"></div>
     </div>
@@ -303,6 +306,17 @@
                 </div>
               </div>
             </div>
+          </div>
+          <div class="settings-group settings-group-subtle">
+            <div class="settings-group-label settings-group-label-subtle" id="settingsPinnedTabsBulkCloseLabel"></div>
+            <p class="settings-group-copy settings-group-copy-subtle" id="settingsPinnedTabsBulkCloseHint"></p>
+            <label class="settings-toggle-row">
+              <span class="settings-toggle-copy" id="settingsPinnedTabsBulkCloseToggle"></span>
+              <span class="settings-toggle-switch">
+                <input type="checkbox" data-action="toggle-pinned-tabs-bulk-close" id="settingsIncludePinnedTabsInBulkClose">
+                <span class="settings-toggle-slider"></span>
+              </span>
+            </label>
           </div>
         </section>
         <section class="settings-panel" data-settings-panel="links" style="display:none">

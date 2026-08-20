@@ -57,6 +57,7 @@ let bookmarkBoardConfig = {
   currentFolderTitle: '',
 };
 let currentOpenTabsView = 'domains';
+let includePinnedTabsInBulkClose = false;
 let draggedWindowTabState = null;
 let dashboardRefreshTimer = null;
 let activeQuickLinkMenuId = '';
@@ -76,6 +77,7 @@ const BOOKMARK_BOARD_COLLAPSED_STORAGE_KEY = 'bookmarkBoardCollapsed';
 const BOOKMARK_BOARD_DISPLAY_LIMIT_STORAGE_KEY = 'bookmarkBoardDisplayLimit';
 const BOOKMARK_COLLECTIONS_STORAGE_KEY = 'bookmarkCollections';
 const OPEN_TABS_VIEW_STORAGE_KEY = 'openTabsView';
+const INCLUDE_PINNED_TABS_IN_BULK_CLOSE_STORAGE_KEY = 'includePinnedTabsInBulkClose';
 const SESSIONS_VIEWED_COUNT_KEY = 'sessionsViewedCount'; // New storage key
 const BOOKMARK_BOARD_MAX_ENTRIES = 4;
 const DEFAULT_BOOKMARK_BOARD_DISPLAY_LIMIT = 2;
@@ -95,6 +97,7 @@ const MESSAGES = {
     tabOutDupeBanner: count => `你打开了 <strong>${count}</strong> 个 TabNest 标签页。只保留当前这个吗？`,
     closeExtras: '关闭多余标签',
     openTabs: '打开中的标签',
+    pinnedTabs: count => `已置顶的标签 · ${count}`,
     openTabsViewLabel: '切换标签视图',
     openTabsViewDomains: '域名',
     openTabsViewWindows: '窗口',
@@ -204,6 +207,9 @@ const MESSAGES = {
     bookmarkBoardVisibleCountMeta: (visible, total) => `${visible} / ${total} 个工作台`,
     settingsBookmarkOpenModeLabel: '点击书签时',
     settingsBookmarkOpenModeHint: '选择替换当前新标签页，或在新标签页中打开。',
+    settingsPinnedTabsBulkCloseLabel: '批量关闭置顶标签',
+    settingsPinnedTabsBulkCloseHint: '默认保护置顶标签；开启后，“关闭全部”和按域名关闭也会包含它们。',
+    settingsPinnedTabsBulkCloseToggle: '保护置顶标签',
     settingsBookmarkFolderCount: count => `${count} 个目录`,
     settingsSaved: '设置已保存',
     toastThemeUpdated: '主题已切换',
@@ -354,6 +360,7 @@ const MESSAGES = {
     tabOutDupeBanner: count => `You have <strong>${count}</strong> TabNest tabs open. Keep just this one?`,
     closeExtras: 'Close extras',
     openTabs: 'Open tabs',
+    pinnedTabs: count => `Pinned tabs · ${count}`,
     openTabsViewLabel: 'Switch tab view',
     openTabsViewDomains: 'Domains',
     openTabsViewWindows: 'Windows',
@@ -463,6 +470,9 @@ const MESSAGES = {
     bookmarkBoardVisibleCountMeta: (visible, total) => `${visible} / ${total} boards`,
     settingsBookmarkOpenModeLabel: 'When clicking a bookmark',
     settingsBookmarkOpenModeHint: 'Open it here, or open it in a new tab.',
+    settingsPinnedTabsBulkCloseLabel: 'Include pinned tabs in bulk close',
+    settingsPinnedTabsBulkCloseHint: 'Pinned tabs are protected by default. Turn this on to include them in Close all and domain close actions.',
+    settingsPinnedTabsBulkCloseToggle: 'Protect pinned tabs',
     settingsBookmarkFolderCount: count => `${count} folders`,
     settingsSaved: 'Settings saved',
     toastThemeUpdated: 'Theme updated',
@@ -1187,6 +1197,33 @@ async function setOpenTabsViewPreference(view) {
   await chrome.storage.local.set({ [OPEN_TABS_VIEW_STORAGE_KEY]: currentOpenTabsView });
 }
 
+async function loadPinnedTabsBulkClosePreference() {
+  try {
+    const { [INCLUDE_PINNED_TABS_IN_BULK_CLOSE_STORAGE_KEY]: storedValue = false } = await chrome.storage.local.get(INCLUDE_PINNED_TABS_IN_BULK_CLOSE_STORAGE_KEY);
+    includePinnedTabsInBulkClose = storedValue === true;
+  } catch {
+    includePinnedTabsInBulkClose = false;
+  }
+}
+
+async function setPinnedTabsBulkClosePreference(enabled) {
+  includePinnedTabsInBulkClose = enabled === true;
+  await chrome.storage.local.set({
+    [INCLUDE_PINNED_TABS_IN_BULK_CLOSE_STORAGE_KEY]: includePinnedTabsInBulkClose,
+  });
+}
+
+function syncPinnedTabsBulkCloseControl() {
+  const input = document.getElementById('settingsIncludePinnedTabsInBulkClose');
+  const label = document.getElementById('settingsPinnedTabsBulkCloseLabel');
+  const hint = document.getElementById('settingsPinnedTabsBulkCloseHint');
+  const toggleCopy = document.getElementById('settingsPinnedTabsBulkCloseToggle');
+  if (input instanceof HTMLInputElement) input.checked = includePinnedTabsInBulkClose;
+  if (label) label.textContent = t('settingsPinnedTabsBulkCloseLabel');
+  if (hint) hint.textContent = t('settingsPinnedTabsBulkCloseHint');
+  if (toggleCopy) toggleCopy.textContent = t('settingsPinnedTabsBulkCloseToggle');
+}
+
 function syncOpenTabsViewControls() {
   const configs = [
     { id: 'openTabsDomainViewBtn', view: 'domains', label: t('openTabsViewDomains') },
@@ -1576,6 +1613,7 @@ function applyStaticText() {
   syncQuickLinkOpenModeControls();
   syncBookmarkBoardLimitControls();
   syncBookmarkOpenModeControls();
+  syncPinnedTabsBulkCloseControl();
   syncOpenTabsViewControls();
   setCurrentSettingsPanel(currentSettingsPanel);
   syncQuickLinkModalText();
@@ -1908,8 +1946,47 @@ function applyBackgroundSelection({ imageDataUrl = '' } = {}) {
     getEffectiveBackgroundColor()
   );
   document.body.classList.toggle('has-custom-background', !!customBackgroundImage);
+  updateCustomBackgroundContrast(customBackgroundImage);
   document.body.classList.remove('has-solid-background');
   syncBackgroundControls();
+}
+
+async function updateCustomBackgroundContrast(imageDataUrl) {
+  const body = document.body;
+  body.classList.remove('has-dark-custom-background');
+
+  if (!imageDataUrl) return;
+
+  try {
+    const image = await loadImageFromUrl(imageDataUrl);
+    const sampleSize = 48;
+    const canvas = document.createElement('canvas');
+    canvas.width = sampleSize;
+    canvas.height = sampleSize;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) return;
+
+    context.drawImage(image, 0, 0, sampleSize, sampleSize);
+    const pixels = context.getImageData(0, 0, sampleSize, sampleSize).data;
+    let luminanceTotal = 0;
+    let visiblePixels = 0;
+
+    for (let index = 0; index < pixels.length; index += 4) {
+      const alpha = pixels[index + 3] / 255;
+      if (!alpha) continue;
+      // Perceived luminance (sRGB); weighting transparent pixels avoids false readings.
+      luminanceTotal += (0.2126 * pixels[index] + 0.7152 * pixels[index + 1] + 0.0722 * pixels[index + 2]) * alpha;
+      visiblePixels += alpha;
+    }
+
+    const averageLuminance = visiblePixels ? luminanceTotal / visiblePixels : 255;
+    // Ignore a stale result if the user selected a different background while sampling.
+    if (customBackgroundImage === imageDataUrl) {
+      body.classList.toggle('has-dark-custom-background', averageLuminance < 148);
+    }
+  } catch {
+    // Keep the default palette if a saved image cannot be sampled.
+  }
 }
 
 async function loadBackgroundPreference() {
@@ -2932,6 +3009,7 @@ async function closeTabsByUrls(urls) {
   const allTabs = await chrome.tabs.query({});
   const toClose = allTabs
     .filter(tab => {
+      if (!includePinnedTabsInBulkClose && tab.pinned) return false;
       const tabUrl = tab.url || '';
       if (tabUrl.startsWith('file://') && exactUrls.has(tabUrl)) return true;
       try {
@@ -2955,7 +3033,9 @@ async function closeTabsExact(urls) {
   if (!urls || urls.length === 0) return;
   const urlSet = new Set(urls);
   const allTabs = await chrome.tabs.query({});
-  const toClose = allTabs.filter(t => urlSet.has(t.url)).map(t => t.id);
+  const toClose = allTabs
+    .filter(tab => (includePinnedTabsInBulkClose || !tab.pinned) && urlSet.has(tab.url))
+    .map(tab => tab.id);
   if (toClose.length > 0) await chrome.tabs.remove(toClose);
   await fetchOpenTabs();
 }
@@ -3036,13 +3116,15 @@ async function closeDuplicateTabs(urls, keepOne = true) {
 
   for (const url of urls) {
     const matching = allTabs.filter(t => t.url === url);
+    const protectedTabs = includePinnedTabsInBulkClose ? [] : matching.filter(tab => tab.pinned);
+    const closableTabs = includePinnedTabsInBulkClose ? matching : matching.filter(tab => !tab.pinned);
     if (keepOne) {
-      const keep = matching.find(t => t.active) || matching[0];
-      for (const tab of matching) {
-        if (tab.id !== keep.id) toClose.push(tab.id);
+      const keep = protectedTabs.length ? null : closableTabs.find(t => t.active) || closableTabs[0];
+      for (const tab of closableTabs) {
+        if (!keep || tab.id !== keep.id) toClose.push(tab.id);
       }
     } else {
-      for (const tab of matching) toClose.push(tab.id);
+      for (const tab of closableTabs) toClose.push(tab.id);
     }
   }
 
@@ -3856,12 +3938,44 @@ function checkTabOutDupes() {
   }
 }
 
+function getBulkClosableTabs(tabs) {
+  return (tabs || []).filter(tab => includePinnedTabsInBulkClose || !tab.pinned);
+}
+
 function renderOpenTabsSectionCount(domainCount, totalTabs) {
-  return `${t('domainsCount', domainCount)} &nbsp;&middot;&nbsp; <button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} ${t('closeAllTabsAction', totalTabs)}</button>`;
+  const closableCount = getBulkClosableTabs(openTabs).filter(tab => tab.url && !tab.url.startsWith('chrome') && !tab.url.startsWith('about:')).length;
+  const closeButton = closableCount
+    ? ` &nbsp;&middot;&nbsp; <button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} ${t('closeAllTabsAction', closableCount)}</button>`
+    : '';
+  return `${t('domainsCount', domainCount)}${closeButton}`;
 }
 
 function renderOpenTabsWindowSectionCount(windowCount, totalTabs) {
-  return `${t('windowsCount', windowCount)} &nbsp;&middot;&nbsp; <button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} ${t('closeAllTabsAction', totalTabs)}</button>`;
+  const closableCount = getBulkClosableTabs(openTabs).filter(tab => tab.url && !tab.url.startsWith('chrome') && !tab.url.startsWith('about:')).length;
+  const closeButton = closableCount
+    ? ` &nbsp;&middot;&nbsp; <button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} ${t('closeAllTabsAction', closableCount)}</button>`
+    : '';
+  return `${t('windowsCount', windowCount)}${closeButton}`;
+}
+
+function renderPinnedTabsSection(tabs) {
+  const items = tabs.map(tab => {
+    const title = cleanTitle(smartTitle(stripTitleNoise(tab.title || ''), tab.url), '') || tab.url || '';
+    const safeTitle = escapeHtml(title);
+    const faviconUrl = escapeHtml(getFaviconSource(tab.url, tab.title, 16, tab.favIconUrl));
+    return `
+      <div class="pinned-tab-item" title="${safeTitle}">
+        ${faviconUrl ? `<img class="pinned-tab-favicon" src="${faviconUrl}" alt="" data-hide-on-error="true">` : ''}
+        <button type="button" class="pinned-tab-focus" data-action="focus-tab-id" data-tab-id="${tab.id}">
+          <span class="pinned-tab-title">${safeTitle}</span>
+        </button>
+        <button type="button" class="pinned-tab-close" data-action="close-single-tab-id" data-tab-id="${tab.id}" title="${escapeHtml(t('closeThisTabTitle'))}" aria-label="${escapeHtml(t('closeThisTabTitle'))}">×</button>
+      </div>`;
+  }).join('');
+
+  return `
+    <div class="pinned-tabs-heading">${escapeHtml(t('pinnedTabs', tabs.length))}</div>
+    <div class="pinned-tabs-list">${items}</div>`;
 }
 
 function getDisplayUrl(url) {
@@ -4391,6 +4505,8 @@ async function renderStaticDashboard() {
   const currentWindow = await chrome.windows.getCurrent().catch(() => null);
   const currentWindowId = currentWindow?.id || 0;
   const realTabs = getRealTabs();
+  const pinnedTabs = realTabs.filter(tab => tab.pinned);
+  const unpinnedTabs = realTabs.filter(tab => !tab.pinned);
   lastRealTabCount = realTabs.length;
 
   // --- Group tabs by domain ---
@@ -4450,7 +4566,7 @@ async function renderStaticDashboard() {
     } catch { return null; }
   }
 
-  for (const tab of realTabs) {
+  for (const tab of unpinnedTabs) {
     try {
       if (isLandingPage(tab.url)) {
         landingTabs.push(tab);
@@ -4507,13 +4623,14 @@ async function renderStaticDashboard() {
 
   // --- Render domain cards ---
   const openTabsSection      = document.getElementById('openTabsSection');
+  const pinnedTabsSection    = document.getElementById('pinnedTabsSection');
   const openTabsMissionsEl   = document.getElementById('openTabsMissions');
   const openTabsWindowsEl    = document.getElementById('openTabsWindows');
   const openTabsSectionCount = document.getElementById('openTabsSectionCount');
   const openTabsSectionTitle = document.getElementById('openTabsSectionTitle');
-  const windowGroups = buildWindowGroups(realTabs, currentWindowId);
+  const windowGroups = buildWindowGroups(unpinnedTabs, currentWindowId);
 
-  if (domainGroups.length > 0 && openTabsSection) {
+  if ((domainGroups.length > 0 || pinnedTabs.length > 0) && openTabsSection) {
     if (openTabsSectionTitle) openTabsSectionTitle.textContent = t('openTabs');
     if (openTabsSectionCount) {
       openTabsSectionCount.innerHTML = currentOpenTabsView === 'windows'
@@ -4526,6 +4643,10 @@ async function renderStaticDashboard() {
         openTabsMissionsEl.innerHTML = domainGroups.map(g => renderDomainCard(g)).join('');
       }
     }
+    if (pinnedTabsSection) {
+      pinnedTabsSection.style.display = pinnedTabs.length ? 'block' : 'none';
+      pinnedTabsSection.innerHTML = pinnedTabs.length ? renderPinnedTabsSection(pinnedTabs) : '';
+    }
     if (openTabsWindowsEl) {
       openTabsWindowsEl.style.display = currentOpenTabsView === 'windows' ? 'grid' : 'none';
       if (currentOpenTabsView === 'windows') {
@@ -4535,6 +4656,10 @@ async function renderStaticDashboard() {
     openTabsSection.style.display = 'block';
   } else if (openTabsSection) {
     openTabsSection.style.display = 'none';
+    if (pinnedTabsSection) {
+      pinnedTabsSection.style.display = 'none';
+      pinnedTabsSection.innerHTML = '';
+    }
   }
 
   // --- Footer stats ---
@@ -4638,6 +4763,15 @@ document.addEventListener('click', async (e) => {
     if (!mode || mode === bookmarkOpenMode) return;
     await setBookmarkOpenModePreference(mode);
     syncBookmarkOpenModeControls();
+    showToast(t('settingsSaved'));
+    return;
+  }
+
+  if (action === 'toggle-pinned-tabs-bulk-close') {
+    const input = actionEl instanceof HTMLInputElement ? actionEl : document.getElementById('settingsIncludePinnedTabsInBulkClose');
+    await setPinnedTabsBulkClosePreference(input instanceof HTMLInputElement && input.checked);
+    syncPinnedTabsBulkCloseControl();
+    await renderDashboard();
     showToast(t('settingsSaved'));
     return;
   }
@@ -6096,6 +6230,7 @@ async function initializeApp() {
   await loadBookmarkBoardCollapsedPreference();
   await loadBookmarkOpenModePreference();
   await loadOpenTabsViewPreference();
+  await loadPinnedTabsBulkClosePreference();
   registerChromeStateListeners();
   await renderDashboard();
 }
